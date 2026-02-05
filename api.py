@@ -31,9 +31,36 @@ OUTPUT_DIR = Path("./outputs")
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Tempo em segundos para limpar arquivos após conversão
+CLEANUP_DELAY = 20
+
 # Armazena o status das conversões
-# Em produção, use Redis ou banco de dados
 conversions: dict = {}
+
+
+# ============ Limpeza Automática ============
+def schedule_cleanup(conversion_id: str, filepath: str, delay: int = CLEANUP_DELAY):
+    """Agenda a limpeza do arquivo após o delay especificado."""
+    def cleanup():
+        time.sleep(delay)
+        try:
+            # Remove o arquivo convertido
+            if filepath and os.path.exists(filepath):
+                os.remove(filepath)
+                print(f"🗑️ Arquivo removido após {delay}s: {filepath}")
+            
+            # Remove a conversão do dicionário
+            if conversion_id in conversions:
+                del conversions[conversion_id]
+                print(f"🗑️ Conversão removida: {conversion_id}")
+                
+        except Exception as e:
+            print(f"❌ Erro ao limpar {conversion_id}: {e}")
+    
+    # Inicia a limpeza em uma thread separada
+    cleanup_thread = threading.Thread(target=cleanup, daemon=True)
+    cleanup_thread.start()
+    print(f"⏰ Limpeza agendada para {delay}s: {conversion_id}")
 
 
 # ============ Modelos ============
@@ -238,10 +265,14 @@ def process_conversion(conversion_id: str, pdf_path: str):
         
         if filename:
             # Sucesso
+            filepath = str(OUTPUT_DIR / filename)
             conversions[conversion_id]["status"] = "completed"
-            conversions[conversion_id]["message"] = "Conversão concluída!"
+            conversions[conversion_id]["message"] = f"Conversão concluída! Arquivo será removido em {CLEANUP_DELAY}s"
             conversions[conversion_id]["filename"] = filename
             conversions[conversion_id]["url"] = f"/download/{conversion_id}"
+            
+            # Agenda limpeza após 20 segundos
+            schedule_cleanup(conversion_id, filepath, CLEANUP_DELAY)
         else:
             # Erro
             conversions[conversion_id]["status"] = "error"
@@ -353,7 +384,7 @@ async def download_file(conversion_id: str):
     Baixa o arquivo Word convertido.
     """
     if conversion_id not in conversions:
-        raise HTTPException(status_code=404, detail="Conversão não encontrada")
+        raise HTTPException(status_code=404, detail="Conversão não encontrada ou expirada (arquivo removido após 20s)")
     
     conv = conversions[conversion_id]
     
@@ -370,7 +401,7 @@ async def download_file(conversion_id: str):
     file_path = OUTPUT_DIR / filename
     
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Arquivo não encontrado no servidor")
+        raise HTTPException(status_code=404, detail="Arquivo expirado (removido após 20s)")
     
     # Nome original sem .pdf + .docx
     original = conv.get("original_filename", "documento.pdf")
